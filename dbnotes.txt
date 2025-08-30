@@ -1,0 +1,218 @@
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode=WAL;        -- better concurrency
+PRAGMA synchronous=NORMAL;      -- good perf/safety tradeoff
+ANALYZE;
+
+--- App Users
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    username TEXT NOT NULL,
+    hash TEXT NOT NULL);
+
+-- Players of the game
+CREATE TABLE players (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    name TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+
+-- Ranks table: defines all ranks
+CREATE TABLE ranks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    rank_no INTEGER NOT NULL,
+    rank_name TEXT NOT NULL,
+    cardinality TEXT NOT NULL
+);
+
+-- Rikishi table: tracks all wrestlers
+CREATE TABLE rikishi (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    ring_name TEXT NOT NULL);
+
+
+-- Basho table: tracks each real-world tournament
+CREATE TABLE basho (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    name TEXT NOT NULL,
+    city TEXT NOT NULL,
+    banzuke_loaded NOT NULL DEFAULT 0,
+    last_update_day NOT NULL DEFAULT 0,
+    start_month INTEGER NOT NULL,
+    start_day INTEGER NOT NULL,
+    start_year INTEGER NOT NULL
+);
+
+
+-- Banzuke table: links Rikishi to a Basho and a Rank
+CREATE TABLE banzuke (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    basho_id INTEGER NOT NULL,
+    rikishi_id INTEGER NOT NULL,
+    rank_id INTEGER NOT NULL,
+    call_up, INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (basho_id) REFERENCES Basho(id),
+    FOREIGN KEY (rikishi_id) REFERENCES Rikishi(id),
+    FOREIGN KEY (rank_id) REFERENCES Ranks(id)
+);
+
+-- Drafts table: draft (game) summary
+CREATE TABLE drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    user_id INTEGER NOT NULL,
+    basho_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    last_seen INTEGER NOT NULL DEFAULT 0,
+    last_days_results_loaded INTEGER NOT NULL DEFAULT 0,
+    winner INTEGER NOT NULL DEFAULT 0,
+    prizes INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (basho_id) REFERENCES basho(id)
+);
+
+CREATE TABLE draft_picks (
+    draft_id INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
+    rikishi_id INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    basho_winner INTEGER NOT NULL DEFAULT 0,
+    special_prizes INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    points INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (draft_id) REFERENCES drafts(id),
+    FOREIGN KEY (rikishi_id) REFERENCES rikishi(id),
+    FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE TABLE days_results (
+    draft_id INTEGER NOT NULL,
+    tournament_day INTEGER NOT NULL DEFAULT 1,
+    rikishi_id INTEGER NOT NULL,
+    win INTEGER NOT NULL DEFAULT 0,
+    funsensho INTEGER NOT NULL DEFAULT 0,
+    loss INTEGER NOT NULL DEFAULT 0,
+    points INTEGER NOT NULL DEFAULT 0,
+    oponent_id INTEGER NOT NULL,
+    FOREIGN KEY (draft_id) REFERENCES drafts(id),
+    FOREIGN KEY (rikishi_id) REFERENCES rikishi(id),
+    FOREIGN KEY (oponent_id) REFERENCES rikishi(id)
+);
+
+-- For faster lookups by foreign keys and common filters/joins
+
+CREATE INDEX idx_banzuke_basho_rikishi ON banzuke(basho_id, rikishi_id);
+CREATE INDEX idx_banzuke_rank_id ON banzuke(rank_id);
+
+CREATE INDEX idx_draft_picks_rikishi ON draft_picks(rikishi_id);
+CREATE INDEX idx_draft_picks_game_rikishi ON draft_picks(draft_id, rikishi_id);
+
+CREATE INDEX idx_days_results_game_day ON days_results(draft_id, tournament_day);
+CREATE INDEX idx_days_results_rikishi ON days_results(rikishi_id);
+CREATE INDEX idx_days_results_opponent ON days_results(oponent_id);
+
+CREATE INDEX idx_basho_start_date ON basho(start_year, start_month, start_day);
+
+CREATE UNIQUE INDEX idx_rikishi_ring_name ON rikishi(ring_name);
+-- This assumes ring names are unique. If not, change to a non-unique index.
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_drafts_user_basho_name
+ON drafts(user_id, basho_id, name);
+
+CREATE INDEX idx_ranks_rank_no ON ranks(rank_no);
+CREATE INDEX idx_ranks_cardinality ON ranks(cardinality);
+
+-- Optional (if you query by player or user names often)
+CREATE INDEX idx_players_name ON players(name);
+CREATE INDEX idx_users_username ON users(username);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_drafts_user_basho_name
+ON drafts(user_id, basho_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_draft_picks_draft_player
+ON draft_picks(draft_id, player_id);
+
+CREATE INDEX IF NOT EXISTS idx_rikishi_ring_name ON rikishi(ring_name);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_basho ON drafts(basho_id);
+
+CREATE INDEX IF NOT EXISTS idx_banzuke_basho_callup ON banzuke(basho_id, call_up);
+CREATE INDEX IF NOT EXISTS idx_banzuke_rank ON banzuke(rank_id);
+
+CREATE INDEX IF NOT EXISTS idx_players_user ON players(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_basho_start_ymd_expr
+ON basho( (start_year*10000 + start_month*100 + start_day) );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_days_results_unique
+ON days_results(draft_id, tournament_day, rikishi_id);
+
+CREATE INDEX IF NOT EXISTS idx_banzuke_basho_rikishi ON banzuke(basho_id, rikishi_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_basho_id       ON drafts(basho_id);
+
+
+-- ranks are static, never change
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (1, 'Yokozuna', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (1, 'Yokozuna', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (2, 'Ozeki', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (2, 'Ozeki', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (3, 'Sekiwake', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (3, 'Sekiwake', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (4, 'Komusubi', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (4, 'Komusubi', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (5, '#1', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (5, '#1', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (6, '#2', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (6, '#2', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (7, '#3', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (7, '#3', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (8, '#4', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (8, '#4', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (9, '#5', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (9, '#5', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (10, '#6', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (10, '#6', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (11, '#7', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (11, '#7', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (12, '#8', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (12, '#8', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (13, '#9', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (13, '#9', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (14, '#10', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (14, '#10', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (15, '#11', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (15, '#11', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (16, '#12', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (16, '#12', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (17, '#13', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (17, '#13', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (18, '#14', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (18, '#14', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (19, '#15', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (19, '#15', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (20, '#16', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (20, '#16', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (21, '#17', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (21, '#17', 'WEST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (22, '#18', 'EAST');
+INSERT INTO ranks (rank_no, rank_name, cardinality) VALUES (23, '#18', 'WEST');
+
+
+-- BASHO: every other month
+INSERT INTO basho (name, city, start_month , start_day, start_year ) VALUES('Fukuoka Kokusai Center', 'Fukuoka', 11, 9, 2025);
+INSERT INTO basho (name, city, start_month , start_day, start_year ) VALUES('Kokugikan', 'Tokyo', 9, 14, 2025);
+INSERT INTO basho (name, city, start_month , start_day, start_year ) VALUES('Nagoya', 'Nagoya',7,13,2025);
+INSERT INTO basho (name, city, start_month, start_day, start_year) VALUES ('Tokyo', 'Tokyo', 5, 11, 2025);
+
+
+-- notes
+
+-- Clean up database
+delete from days_results ;
+delete from draft_picks;
+delete from drafts;
+delete from banzuke;
+delete from rikishi;
+update basho set banzuke_loaded =0, last_update_day = 0;
+delete from days_results ;
+delete from players

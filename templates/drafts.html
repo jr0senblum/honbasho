@@ -1,0 +1,372 @@
+{% extends "layout.html" %}
+{% block title %}Drafts{% endblock %}
+
+{% block main %}
+<div class="container py-4 text-start">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4 gap-3">
+    <h1 class="mb-0">Drafts</h1>
+
+    <div class="d-flex align-items-center gap-3">
+      <!-- Draft selector -->
+      <div class="d-flex align-items-center">
+        <label for="draftSelect" class="me-2 fw-bold">Draft:</label>
+        <select id="draftSelect" class="form-select">
+  <option value="">-- Select a Draft --</option>
+  {% for d in drafts %}
+    <option
+      value="{{ d.draft_id }}"
+      data-basho-id="{{ d.basho_id }}"
+      data-year="{{ d.start_year }}"
+      data-month="{{ '%02d'|format(d.start_month) }}"
+    >
+      {{ d.draft_name }} — {{ d.city }} ({{ d.start_year }}-{{ '%02d'|format(d.start_month) }})
+    </option>
+  {% endfor %}
+</select>
+      </div>
+    </div>
+  </div>
+
+  <div id="hint" class="alert alert-info" role="alert">
+    Select a draft to view its picks.
+  </div>
+
+  <!-- Same layout area as new_draft; JS fills it -->
+  <div id="players" class="d-none"></div>
+</div>
+
+<script>
+/**
+ * drafts.html — View existing drafts in the same grid format as new_draft.html (read-only).
+ *
+ * Uses:
+ *   GET /picks/<draft_id> → rows with { player_id, player_name, rikishi_id, ring_name, start_year, start_month, ... }
+ *   GET /banzuke/<mm>/<yyyy> → banzuke JSON
+ */
+
+// -------------- State --------------
+let banzuke = {};                // normalized: { rank_no: [{rank_name, EAST:{id,name}, WEST:{id,name}}, ...], ... }
+let rankByRikishi = {};          // { rikishi_id: rank_no }
+let playersForUI = [];           // [{id, name, picks:[{id,name}, ...]}, ...] derived from /picks
+let draftMeta = null;            // {year, month, basho_id}
+
+// -------------- Helpers from new_draft --------------
+function normalizeSide(side, fallbackId, fallbackName) {
+  if (!side) return null;
+  if (typeof side === "string") return { id: fallbackId ?? null, name: side };
+  if (typeof side === "object") {
+    return {
+      id:   side.id   ?? fallbackId ?? null,
+      name: side.name ?? fallbackName ?? ""
+    };
+  }
+  return null;
+}
+
+function normalizeBanzuke(payload) {
+  const data = payload?.banzuke ?? payload?.data ?? payload ?? {};
+  const out = {};
+  if (Array.isArray(data)) {
+    data.forEach(row => {
+      const idx = Number(row.rank_index ?? row.index ?? row.rank ?? 0);
+      if (!idx) return;
+      (out[idx] ||= []).push({
+        rank_name: row.rank_name ?? row.rankName ?? "",
+        EAST: normalizeSide(row.EAST ?? row.east ?? row.East, row.EAST_id ?? row.east_id, row.EAST_name ?? row.east_name),
+        WEST: normalizeSide(row.WEST ?? row.west ?? row.West, row.WEST_id ?? row.west_id, row.WEST_name ?? row.west_name),
+      });
+    });
+  } else {
+    Object.keys(data).forEach(k => {
+      const arr = data[k] || [];
+      out[+k] = arr.map(e => ({
+        rank_name: e.rank_name ?? e.rankName ?? "",
+        EAST: normalizeSide(e.EAST ?? e.east, e.EAST?.id, e.EAST?.name ?? e.east_name),
+        WEST: normalizeSide(e.WEST ?? e.west, e.WEST?.id, e.WEST?.name ?? e.west_name),
+      }));
+    });
+  }
+  return out;
+}
+
+function getRikishiByRange(start, end) {
+  const list = [];
+  for (let i = start; i <= end; i++) {
+    (banzuke[i] || []).forEach(e => {
+      if (e.EAST && e.EAST.name && e.EAST.name !== "--") {
+        const id = e.EAST.id ?? `E:${i}:${e.EAST.name}`;
+        list.push({ id: String(id), label: `${e.EAST.name} (${e.rank_name} East)` });
+      }
+      if (e.WEST && e.WEST.name && e.WEST.name !== "--") {
+        const id = e.WEST.id ?? `W:${i}:${e.WEST.name}`;
+        list.push({ id: String(id), label: `${e.WEST.name} (${e.rank_name} West)` });
+      }
+    });
+  }
+  return list;
+}
+
+function buildDropdown(list, name, placeholder="-- Choose --") {
+  const sel = document.createElement("select");
+  sel.className = "form-select mb-3";
+  sel.name = name;
+
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = placeholder;
+  sel.appendChild(empty);
+
+  list.forEach(item => {
+    const o = document.createElement("option");
+    o.value = item.id ?? "";
+    o.textContent = item.label;
+    o.dataset.label = item.label;
+    sel.appendChild(o);
+  });
+
+  // Viewing page → keep read-only
+  sel.disabled = true;
+  sel.setAttribute("readonly", "readonly");
+
+  return sel;
+}
+
+// -------------- Build players grid (same look as new_draft) --------------
+function buildPlayersGrid(count) {
+  const container = document.getElementById("players");
+  container.classList.remove("d-none");
+  container.innerHTML = "";
+  container.style.display = "grid";
+  container.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+  container.style.gap = "1.5rem";
+
+  const ranges = [
+    getRikishiByRange(1,4),    // Y–K
+    getRikishiByRange(5,8),    // M1–M4
+    getRikishiByRange(9,12),   // M5–M8
+    getRikishiByRange(13,16),  // M9–M12
+    getRikishiByRange(17,99),  // M13+
+    getRikishiByRange(1,17)    // Wildcard
+  ];
+  const labels = [
+    "Yokozuna–Komusubi",
+    "Maegashira #1–#4",
+    "Maegashira #5–#8",
+    "Maegashira #9–#12",
+    "Maegashira #13+",
+    "Wildcard (#1–#17)"
+  ];
+
+  for (let p = 1; p <= count; p++) {
+    const card = document.createElement("div");
+    card.className = "card shadow-sm h-100 d-flex flex-column";
+
+    const body = document.createElement("div");
+    body.className = "card-body d-flex flex-column";
+
+    const h5 = document.createElement("h5");
+    h5.className = "card-title mb-3";
+    h5.textContent = `Player ${p}`;
+    body.appendChild(h5);
+
+    // Player name select (we'll populate with that player's single option after we know it)
+    const lbl = document.createElement("label");
+    lbl.className = "form-label";
+    lbl.textContent = "Player:";
+    body.appendChild(lbl);
+
+    const playerSel = buildDropdown([], `p${p}_name`, "-- Player --");
+    body.appendChild(playerSel);
+
+    ranges.forEach((list,i) => {
+      const catLbl = document.createElement("label");
+      catLbl.className = "form-label mt-2";
+      catLbl.textContent = labels[i];
+      body.appendChild(catLbl);
+
+      const pickSel = buildDropdown(list, `p${p}_cat${i}`, "-- Pick --");
+      body.appendChild(pickSel);
+    });
+
+    card.appendChild(body);
+    container.appendChild(card);
+  }
+}
+
+// -------------- Map picks → category slots --------------
+function buildRankMap() {
+  rankByRikishi = {};
+  Object.keys(banzuke).forEach(k => {
+    const rankNo = Number(k);
+    (banzuke[k] || []).forEach(row => {
+      if (row.EAST && row.EAST.id != null) rankByRikishi[String(row.EAST.id)] = rankNo;
+      if (row.WEST && row.WEST.id != null) rankByRikishi[String(row.WEST.id)] = rankNo;
+    });
+  });
+}
+
+function catIndexForRank(rankNo) {
+  if (rankNo >= 1 && rankNo <= 4)   return 0; // Y–K
+  if (rankNo >= 5 && rankNo <= 8)   return 1; // M1–M4
+  if (rankNo >= 9 && rankNo <= 12)  return 2; // M5–M8
+  if (rankNo >= 13 && rankNo <= 16) return 3; // M9–M12
+  if (rankNo >= 17)                 return 4; // M13+
+  return null;
+}
+
+/** Given a player's rikishi id list, assign them to 6 slots (0..5), where 5 = wildcard. */
+function assignPicksToCategories(ridList) {
+  const cats = {0:null,1:null,2:null,3:null,4:null,5:null};
+  const leftovers = [];
+
+  ridList.forEach(ridRaw => {
+    const rid = String(ridRaw);
+    const rankNo = rankByRikishi[rid];
+    const idx = catIndexForRank(rankNo);
+    if (idx == null) {
+      leftovers.push(rid); // unknown rank → drop to wildcard if needed
+      return;
+    }
+    if (cats[idx] == null) {
+      cats[idx] = rid;
+    } else {
+      leftovers.push(rid); // duplicate in same bucket → wildcard
+    }
+  });
+
+  if (cats[5] == null && leftovers.length) cats[5] = leftovers[0];
+  return cats;
+}
+
+// -------------- Loaders --------------
+async function loadPicks(draftId) {
+  const r = await fetch(`/picks/${encodeURIComponent(draftId)}`);
+  if (!r.ok) throw new Error("Failed to load picks");
+  const data = await r.json();
+
+  const rows = Array.isArray(data.picks) ? data.picks : [];
+  if (!rows.length) return { players: [], meta: null };
+
+  // Build playersForUI = [{id, name, picks:[{id,name}, ...]}, ...]
+  const byPlayer = new Map();
+  rows.forEach(row => {
+    const pid   = row.player_id;
+    const pname = row.player_name;
+    const rid   = row.rikishi_id;
+    const rname = row.ring_name;
+    if (pid == null || rid == null) return;
+
+    if (!byPlayer.has(pid)) byPlayer.set(pid, { id: pid, name: pname ?? `Player ${pid}`, picks: [] });
+    byPlayer.get(pid).picks.push({ id: rid, name: rname ?? `#${rid}` });
+  });
+
+  const playersArr = Array.from(byPlayer.values());
+
+  // Meta (year/month) from the first row
+  const meta = {
+    year:  rows[0].start_year,
+    month: rows[0].start_month
+  };
+
+  return { players: playersArr, meta };
+}
+
+async function loadBanzukeFor(meta) {
+  const mm = String(meta.month).padStart(2, "0");
+  const r = await fetch(`/banzuke/${encodeURIComponent(mm)}/${encodeURIComponent(meta.year)}`);
+  if (!r.ok) throw new Error("Failed to load banzuke");
+  const raw = await r.json();
+  banzuke = normalizeBanzuke(raw);
+  buildRankMap();
+}
+
+// -------------- Populate UI --------------
+function fillGridWithDraft() {
+  const container = document.getElementById("players");
+  const hint = document.getElementById("hint");
+  container.classList.remove("d-none");
+  hint.classList.add("d-none");
+
+  // Build grid columns = number of players in this draft
+  buildPlayersGrid(playersForUI.length);
+
+  // For each player column, set player name + category pick selects
+  playersForUI.forEach((p, idx) => {
+    const cardIndex = idx + 1;
+
+    // Set player select to a single disabled option
+    const selPlayer = container.querySelector(`select[name="p${cardIndex}_name"]`);
+    if (selPlayer) {
+      selPlayer.innerHTML = "";
+      const o = document.createElement("option");
+      o.value = String(p.id);
+      o.textContent = p.name;
+      o.selected = true;
+      selPlayer.appendChild(o);
+      selPlayer.disabled = true;
+      selPlayer.setAttribute("readonly","readonly");
+    }
+
+    // Assign picks to categories by rank
+    const ridList = (p.picks || []).map(x => String(x.id));
+    const cats = assignPicksToCategories(ridList);
+
+    // Fill each category select if we have that pick
+    for (let c = 0; c <= 5; c++) {
+      const rid = cats[c];
+      if (!rid) continue;
+      const sel = container.querySelector(`select[name="p${cardIndex}_cat${c}"]`);
+      if (!sel) continue;
+
+      // Set the value if option exists; otherwise add a one-off option then select it.
+      const opt = sel.querySelector(`option[value="${CSS.escape(String(rid))}"]`);
+      if (opt) {
+        sel.value = String(rid);
+      } else {
+        const one = document.createElement("option");
+        one.value = String(rid);
+        const pname = (p.picks.find(pp => String(pp.id) === String(rid)) || {}).name || `#${rid}`;
+        one.textContent = pname;
+        sel.appendChild(one);
+        sel.value = String(rid);
+      }
+    }
+  });
+}
+
+// -------------- Events --------------
+document.getElementById("draftSelect").addEventListener("change", async () => {
+  const draftId = document.getElementById("draftSelect").value;
+  const container = document.getElementById("players");
+  const hint = document.getElementById("hint");
+
+  // Reset UI
+  container.innerHTML = "";
+  container.classList.add("d-none");
+  hint.classList.remove("d-none");
+
+  if (!draftId) return;
+
+  try {
+    // 1) picks → players + meta (year/month)
+    const { players, meta } = await loadPicks(draftId);
+    if (!players.length || !meta) {
+      alert("No picks found for that draft.");
+      return;
+    }
+    playersForUI = players;
+    draftMeta = meta;
+
+    // 2) banzuke for that basho
+    await loadBanzukeFor(meta);
+
+    // 3) paint grid read-only with this draft
+    fillGridWithDraft();
+
+  } catch (e) {
+    console.error(e);
+    alert("Could not load that draft.");
+  }
+});
+</script>
+{% endblock %}

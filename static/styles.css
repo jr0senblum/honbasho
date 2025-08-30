@@ -1,0 +1,51 @@
+/* Size for brand */
+nav .navbar-brand
+{
+    font-size: xx-large;
+}
+
+/* Colors for brand */
+nav .navbar-brand .blue
+{
+    color: #537fbe;
+}
+nav .navbar-brand .red
+{
+    color: #ea433b;
+}
+nav .navbar-brand .yellow
+{
+    color: #f5b82e;
+}
+nav .navbar-brand .green
+{
+    color: #2e944b;
+}
+/* --- Score Game highlights --- */
+#scoresTable td.win-8  { background-color: #e6f3ff; } /* light blue (8th win)   */
+#scoresTable td.win-10 { background-color: #e8fbe8; } /* light green (10th win) */
+#scoresTable td.kinboshi { background-color: #ead6ff; } /* light purple */
+
+/* Precedence rules */
+#scoresTable td.kinboshi.win-8,
+#scoresTable td.kinboshi.win-10 { background-color: #ead6ff; } /* kinboshi wins */
+#scoresTable td.win-10.win-8     { background-color: #e8fbe8; } /* 10th > 8th    */
+
+
+
+/* ensure borders stack cleanly */
+#scoresTable {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+/* strong vertical divider between player blocks */
+#scoresTable .player-divider-right {
+  border-right: 4px solid #000 !important;  /* strong line */
+}
+
+/* optional: soften the default cell borders so the divider stands out more */
+#scoresTable td,
+#scoresTable th {
+  border-color: #dee2e6; /* bootstrap default, keep it light */
+}

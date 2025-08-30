@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block title %}Players{% endblock %}
+
+{% block main %}
+ <h2>Players</h2>
+<div class="container py-4 text-start">
+
+
+
+  <!-- Add Player -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title mb-3">Add a Player</h5>
+      <form action="/players" method="post" class="row g-3">
+        <div class="col-md-6">
+          <label for="playerName" class="form-label">Name</label>
+          <input type="text" class="form-control" id="playerName" name="name" required>
+          <div class="form-text">Create players for {{ username }}.</div>
+        </div>
+        <div class="col-12">
+          <button class="btn btn-primary" type="submit">Add Player</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Players List -->
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title mb-3">Your Players</h5>
+
+      {% if players and players|length %}
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead>
+              <tr>
+                <th scope="col" style="width: 80px;">ID</th>
+                <th scope="col">Name</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in players %}
+              <tr>
+                <td><span class="badge bg-secondary">{{ p.id }}</span></td>
+                <td>{{ p.name }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="text-muted mb-0">You don’t have any players yet. Add one above!</p>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

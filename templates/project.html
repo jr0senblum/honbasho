@@ -1,0 +1,51 @@
+{% extends "layout.html" %}
+{% block title %}Project — Honbasho{% endblock %}
+
+{% block main %}
+<div class="container py-4 text-start">
+  <div class="row">
+    <div class="col-lg-8">
+      <h1 class="mb-3">Honbasho</h1>
+      <p class="text-muted mb-4">CS50 Final Project</p>
+
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <dl class="row mb-0">
+            <dt class="col-sm-4">Project Title</dt>
+            <dd class="col-sm-8"><strong>Honbasho</strong></dd>
+
+            <dt class="col-sm-4">Name</dt>
+            <dd class="col-sm-8">Jim Rosenblum</dd>
+
+            <dt class="col-sm-4">GitHub Username</dt>
+            <dd class="col-sm-8">jr0senblum</dd>
+
+            <dt class="col-sm-4">edX Username</dt>
+            <dd class="col-sm-8">jimrosenblum</dd>
+
+            <dt class="col-sm-4">City</dt>
+            <dd class="col-sm-8">Seattle, Washington</dd>
+
+            <dt class="col-sm-4">Country</dt>
+            <dd class="col-sm-8">USA</dd>
+          </dl>
+        </div>
+      </div>
+
+      <!-- Optional brief blurb; safe to delete if you want only the facts above -->
+      <p class="mt-4">
+        Honbasho is a fantasy sumo web app built with Python, Flask, and SQLite3.
+        <br><br>
+        In Sumo tournaments, or Basho, wrestlers (Rikishi) are ranked from Maegashira 17 to Maegashira 1,
+        followed by the san’yaku ranks of Komusubi, Sekiwake, Ozeki, and Yokozuna. Tournaments are
+        15 days long and Rikishi fight once per day, and the winner is the Rikishi with the most victories.
+        <br><br>
+        Honbasho is a web-based draft game where one to three players draft a team of Rikishi
+        and earn points for every bout their drafted Rikishi wins. Bonus points are awarded when a rank-and-file
+        Maegashira defeats a san’yaku opponent, when a wrestler achieves an 8th win (kachikoshi) or 10th win, wining the
+        tournament, or for special prizes awarded at the end of the tournament.
+      </p>
+    </div>
+  </div>
+</div>
+{% endblock %}

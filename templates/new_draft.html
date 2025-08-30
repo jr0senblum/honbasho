@@ -1,0 +1,392 @@
+{% extends "layout.html" %}
+{% block title %}New Draft{% endblock %}
+
+{% block main %}
+<div class="container py-4 text-start">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4 gap-3">
+    <h1 class="mb-0">New Draft</h1>
+
+    <div class="d-flex align-items-center gap-3">
+      <!-- Basho selector -->
+      <div class="d-flex align-items-center">
+        <label for="bashoSelect" class="me-2 fw-bold">Basho:</label>
+        <select id="bashoSelect" class="form-select">
+          <option value="">-- Select a Basho --</option>
+          {% for b in basho %}
+            <option
+              value="{{ b.id }}"
+              data-year="{{ b.start_year }}"
+              data-month="{{ '%02d'|format(b.start_month) }}"
+              data-name="{{ b.name }}"
+            >
+              {{ b.name }} — {{ b.city }} ({{ b.start_year }}-{{ '%02d'|format(b.start_month) }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- Player count -->
+      <div class="d-flex align-items-center">
+        <label for="playerCount" class="me-2 fw-bold">Players:</label>
+        <select id="playerCount" class="form-select w-auto" disabled>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="bashoHint" class="alert alert-info" role="alert">
+    Select a basho to load the banzuke and start drafting.
+  </div>
+
+  <!-- JS controls layout; no Bootstrap grid classes -->
+  <div id="players"></div>
+
+  <!-- Draft Name + Lock -->
+  <div class="d-flex align-items-center gap-2 mt-3">
+    <label for="draftName" class="fw-bold">Draft Name:</label>
+    <input id="draftName" class="form-control" type="text" placeholder="e.g., Hatsu (2025-01)" required style="max-width: 28rem;">
+    <div class="invalid-feedback"></div>
+    <button id="lockButton" class="btn btn-primary" type="button" disabled>Lock</button>
+  </div>
+</div>
+
+<script>
+  // ---------- Incoming server data ----------
+  const players = {{ players|tojson }};
+
+  // ---------- State ----------
+  let banzuke = {};
+  let basho_id = null;
+  let draftNameDirty = false; // user typed in the Draft Name manually
+
+  // ---------- Normalization helpers ----------
+  function normalizeSide(side, fallbackId, fallbackName) {
+    if (!side) return null;
+    if (typeof side === "string") return { id: fallbackId ?? null, name: side };
+    if (typeof side === "object") {
+      return { id: side.id ?? fallbackId ?? null, name: side.name ?? fallbackName ?? "" };
+    }
+    return null;
+  }
+
+  function normalizeBanzuke(payload) {
+    const data = payload?.banzuke ?? payload?.data ?? payload ?? {};
+    const out = {};
+
+    if (Array.isArray(data)) {
+      data.forEach(row => {
+        const idx = Number(row.rank_index ?? row.index ?? row.rank ?? 0);
+        if (!idx) return;
+        (out[idx] ||= []).push({
+          rank_name: row.rank_name ?? row.rankName ?? "",
+          EAST: normalizeSide(row.EAST ?? row.east ?? row.East, row.EAST_id ?? row.east_id, row.EAST_name ?? row.east_name),
+          WEST: normalizeSide(row.WEST ?? row.west ?? row.West, row.WEST_id ?? row.west_id, row.WEST_name ?? row.west_name),
+        });
+      });
+    } else {
+      Object.keys(data).forEach(k => {
+        const arr = data[k] || [];
+        out[+k] = arr.map(e => ({
+          rank_name: e.rank_name ?? e.rankName ?? "",
+          EAST: normalizeSide(e.EAST ?? e.east, e.EAST?.id, e.EAST?.name ?? e.east_name),
+          WEST: normalizeSide(e.WEST ?? e.west, e.WEST?.id, e.WEST?.name ?? e.west_name),
+        }));
+      });
+    }
+    return out;
+  }
+
+  // ---------- Draft helpers ----------
+  function getRikishiByRange(start, end) {
+    const list = [];
+    for (let i = start; i <= end; i++) {
+      (banzuke[i] || []).forEach(e => {
+        if (e.EAST && e.EAST.name && e.EAST.name !== "--") {
+          const id = e.EAST.id ?? `E:${i}:${e.EAST.name}`;
+          list.push({ id: String(id), label: `${e.EAST.name} (${e.rank_name} East)` });
+        }
+        if (e.WEST && e.WEST.name && e.WEST.name !== "--") {
+          const id = e.WEST.id ?? `W:${i}:${e.WEST.name}`;
+          list.push({ id: String(id), label: `${e.WEST.name} (${e.rank_name} West)` });
+        }
+      });
+    }
+    return list;
+  }
+
+  function defaultDraftNameForOption(opt) {
+    if (!opt) return "";
+    const name  = opt.dataset.name || opt.textContent.trim();
+    const year  = opt.dataset.year || "";
+    const month = opt.dataset.month || "";
+    return name && year && month ? `${name} (${year}-${month})` : name;
+  }
+
+  function updateLockButton() {
+    const allSelects = Array.from(document.querySelectorAll("#players select"));
+    const allFilled  = allSelects.length > 0 && allSelects.every(sel => sel.value);
+    const draftName  = document.getElementById("draftName").value.trim();
+    const bashoSelected = !!document.getElementById("bashoSelect").value;
+    document.getElementById("lockButton").disabled = !(bashoSelected && draftName && allFilled);
+  }
+
+  function updateSelections() {
+    const picked = new Set(
+      Array.from(document.querySelectorAll(".rikishi-select"))
+           .map(s => s.value)
+           .filter(v => v)
+    );
+    document.querySelectorAll(".rikishi-select").forEach(sel => {
+      sel.querySelectorAll("option").forEach(opt => {
+        if (!opt.value) {
+          opt.disabled = false;
+        } else {
+          opt.disabled = (opt.value !== sel.value && picked.has(opt.value));
+        }
+      });
+    });
+  }
+
+  function buildDropdown(list, name, placeholder="-- Choose --") {
+    const sel = document.createElement("select");
+    sel.className = "form-select mb-3";
+    sel.name = name;
+
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = placeholder;
+    sel.appendChild(empty);
+
+    list.forEach(item => {
+      const o = document.createElement("option");
+      o.value = item.id ?? "";
+      o.textContent = item.label;
+      o.dataset.label = item.label;
+      sel.appendChild(o);
+    });
+
+    sel.addEventListener("change", updateLockButton);
+
+    if (!name.endsWith("_name")) {
+      sel.classList.add("rikishi-select");
+      sel.addEventListener("change", updateSelections);
+    }
+
+    return sel;
+  }
+
+  // ---------- UI build (CSS Grid controlled) ----------
+  function buildPlayers(count = 3) {
+    const container = document.getElementById("players");
+
+    container.className = "";
+    container.removeAttribute("style");
+    container.style.display = "grid";
+    container.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+    container.style.gap = "1.5rem";
+    container.innerHTML = "";
+
+    const ranges = [
+      getRikishiByRange(1,4),
+      getRikishiByRange(5,8),
+      getRikishiByRange(9,12),
+      getRikishiByRange(13,16),
+      getRikishiByRange(17,21),
+      getRikishiByRange(5,21)
+    ];
+    const labels = [
+      "Yokozuna–Komusubi",
+      "Maegashira #1–#4",
+      "Maegashira #5–#8",
+      "Maegashira #9–#12",
+      "Maegashira #13+",
+      "Wildcard (#1–#17)"
+    ];
+
+    for (let p = 1; p <= count; p++) {
+      const card = document.createElement("div");
+      card.className = "card shadow-sm h-100 d-flex flex-column";
+
+      const body = document.createElement("div");
+      body.className = "card-body d-flex flex-column";
+
+      const h5 = document.createElement("h5");
+      h5.className = "card-title mb-3";
+      h5.textContent = `Player ${p}`;
+      body.appendChild(h5);
+
+      const lbl = document.createElement("label");
+      lbl.className = "form-label";
+      lbl.textContent = "Select Player:";
+      body.appendChild(lbl);
+
+      const plList = players.map(x => ({ id: String(x.id), label: x.name }));
+      body.appendChild(buildDropdown(plList, `p${p}_name`, "-- Select Player --"));
+
+      ranges.forEach((list,i) => {
+        const catLbl = document.createElement("label");
+        catLbl.className = "form-label mt-2";
+        catLbl.textContent = labels[i];
+        body.appendChild(catLbl);
+        body.appendChild(buildDropdown(list, `p${p}_cat${i}`));
+      });
+
+      card.appendChild(body);
+      container.appendChild(card);
+    }
+
+    updateSelections();
+    updateLockButton();
+  }
+
+  // ---------- Data load ----------
+  async function loadBanzukeForSelection() {
+    const sel = document.getElementById("bashoSelect");
+    const opt = sel.selectedOptions[0];
+    const draftNameEl = document.getElementById("draftName");
+
+    if (!opt || !opt.value) {
+      banzuke = {};
+      basho_id = null;
+      document.getElementById("players").innerHTML = "";
+      document.getElementById("lockButton").disabled = true;
+      document.getElementById("playerCount").disabled = true;
+      document.getElementById("bashoHint").classList.remove("d-none");
+      // Clear draft name only if user hasn't typed one
+      if (!draftNameDirty) draftNameEl.value = "";
+      return;
+    }
+
+    // Default Draft Name (only if user hasn't edited)
+    if (!draftNameDirty) {
+      draftNameEl.value = defaultDraftNameForOption(opt);
+    }
+
+    const year  = opt.dataset.year;
+    const month = opt.dataset.month;
+
+    const resp = await fetch(`/banzuke/${month}/${year}`);
+    if (!resp.ok) { console.error("Failed to load banzuke"); updateLockButton(); return; }
+    const raw = await resp.json();
+
+    banzuke  = normalizeBanzuke(raw);
+    basho_id = raw.basho_id ?? raw.bashoId ?? (isNaN(+opt.value) ? opt.value : +opt.value);
+
+    document.getElementById("playerCount").disabled = false;
+    document.getElementById("bashoHint").classList.add("d-none");
+    buildPlayers(+document.getElementById("playerCount").value);
+  }
+
+  // ---------- Draft name error helpers ----------
+  function showDraftNameError(msg) {
+    const input = document.getElementById("draftName");
+    input.classList.add("is-invalid");
+    const fb = input.nextElementSibling;
+    if (fb) fb.textContent = msg || "A draft with this name already exists. Choose a unique name.";
+  }
+  function clearDraftNameError() {
+    const input = document.getElementById("draftName");
+    input.classList.remove("is-invalid");
+    const fb = input.nextElementSibling;
+    if (fb) fb.textContent = "";
+  }
+
+  // ---------- Events ----------
+  document.getElementById("bashoSelect").addEventListener("change", loadBanzukeForSelection);
+
+  document.getElementById("playerCount").addEventListener("change", ()=>{
+    if (!Object.keys(banzuke).length) return;
+    buildPlayers(+document.getElementById("playerCount").value);
+  });
+
+  document.getElementById("draftName").addEventListener("input", () => {
+    draftNameDirty = true;
+    clearDraftNameError();
+    updateLockButton();
+  });
+
+  document.getElementById("lockButton").addEventListener("click", async ()=>{
+    clearDraftNameError();
+
+    // Validate
+    const draftNameEl = document.getElementById("draftName");
+    const draftName = draftNameEl.value.trim();
+    if (!draftName) { showDraftNameError("Draft Name is required."); return; }
+
+    const allSelects = Array.from(document.querySelectorAll("#players select"));
+    const allFilled  = allSelects.length > 0 && allSelects.every(sel => sel.value);
+    if (!allFilled) return;
+
+    // Build payload
+    const payload = { players: [], basho_id: basho_id, draft_name: draftName };
+
+    document.querySelectorAll("#players .card").forEach((card,i)=>{
+      const pd = { player_id:null, player_name:"", picks:{} };
+      const ps = card.querySelector(`select[name=p${i+1}_name]`);
+      if (ps && ps.value) {
+        pd.player_id   = isNaN(+ps.value) ? ps.value : +ps.value;
+        pd.player_name = ps.selectedOptions[0].dataset.label;
+      }
+      card.querySelectorAll(".rikishi-select").forEach(sel=>{
+        const key = sel.name;
+        const opt = sel.selectedOptions[0];
+        pd.picks[key] = {
+          id:   opt && opt.value ? (isNaN(+opt.value) ? opt.value : +opt.value) : null,
+          name: (opt && opt.dataset.label) || ""
+        };
+      });
+      payload.players.push(pd);
+    });
+
+    // Disable UI while posting
+    const btn = document.getElementById("lockButton");
+    const prevLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Locking...";
+
+    try {
+      const r = await fetch("/new_draft", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(payload)
+      });
+
+      if (r.status === 409) {
+        const j = await r.json().catch(()=> ({}));
+        showDraftNameError(j.message || "A draft with this name already exists. Choose a unique name.");
+        btn.disabled = false;
+        btn.textContent = prevLabel;
+        return;
+      }
+
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = prevLabel;
+        alert("Unexpected error creating draft.");
+        return;
+      }
+
+      // Success: make the page read-only and mark as locked
+      document
+        .querySelectorAll('#players select, #bashoSelect, #playerCount, #draftName')
+        .forEach(el => { el.disabled = true; el.setAttribute("readonly", "readonly"); });
+
+      btn.textContent = "Locked";
+      btn.classList.remove("btn-primary");
+      btn.classList.add("btn-secondary");
+      btn.disabled = true;
+
+      alert("Picks locked!");
+
+    } catch (err) {
+      console.error(err);
+      btn.disabled = false;
+      btn.textContent = prevLabel;
+      alert("Network error. Please try again.");
+    }
+  });
+</script>
+{% endblock %}

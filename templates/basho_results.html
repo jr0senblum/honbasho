@@ -1,0 +1,109 @@
+{% extends "layout.html" %}
+
+{% block title %}
+Update Game
+{% endblock %}
+
+{% block main %}
+<div class="container mt-4">
+    <h2 class="mb-4">View Basho Results</h2>
+
+    <!-- Basho Game Picker -->
+    <div class="mb-3">
+        <label for="gamePicker" class="form-label fw-bold">Select Basho:</label>
+        <select id="gamePicker" class="form-select">
+            <option value="" selected disabled>-- Select Basho --</option>
+            {% for game in games %}
+                <option
+                    value="{{ game['basho_id'] }}"
+                    data-year="{{ game['start_year'] }}"
+                    data-month="{{ "%02d"|format(game['start_month']) }}">
+                    Basho {{ game['name'] }}, ({{ game['city'] }})
+                    starting {{ "%02d"|format(game['start_month']) }}/{{ "%02d"|format(game['start_day']) }}/{{ game['start_year'] }}
+                </option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <!-- Day Picker -->
+    <div class="mb-3">
+        <label for="dayPicker" class="form-label fw-bold">Select Day (01–16):</label>
+        <select id="dayPicker" class="form-select">
+            <option value="" selected disabled>-- Select a Day --</option>
+            {% for d in range(1,17) %}
+                <option value="{{ "%02d"|format(d) }}">{{ "%02d"|format(d) }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <!-- Fetch Button -->
+    <button id="fetchResultsBtn" class="btn btn-primary">Fetch Results</button>
+
+    <!-- Results Table -->
+    <div id="resultsContainer" class="mt-5" style="display:none;">
+        <h4 class="mb-3">Day Results</h4>
+        <div class="table-responsive">
+            <table id="resultsTable" class="table table-bordered table-striped align-middle">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Winner</th>
+                        <th>Winner Record</th>
+                        <th>Loser</th>
+                        <th>Loser Record</th>
+                        <th>Technique</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('fetchResultsBtn').addEventListener('click', async function () {
+  console.log("Button clicked")
+    const gameSelect = document.getElementById('gamePicker');
+    const daySelect = document.getElementById('dayPicker');
+    const gameOption = gameSelect.options[gameSelect.selectedIndex];
+
+    if (!gameSelect.value || !daySelect.value) {
+        alert('Please select both a Basho game and a day.');
+        return;
+    }
+
+    const year = gameOption.dataset.year;
+    const month = gameOption.dataset.month;
+    const day = daySelect.value;
+
+    try {
+        // The endpoint returns JSON string; fetch + parse as JSON
+        const response = await fetch(`/parse_sumodb_day/${year}/${month}/${day}`);
+        const bouts = await response.json();
+
+        const tbody = document.querySelector('#resultsTable tbody');
+        tbody.innerHTML = '';
+
+        if (!bouts.length) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center">No results for this day.</td></tr>`;
+        } else {
+            bouts.forEach(bout => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><strong>${bout.winner}</strong></td>
+                    <td>${bout.winner_record}</td>
+                    <td>${bout.loser}</td>
+                    <td>${bout.loser_record}</td>
+                    <td class="text-capitalize">${bout.technique}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        document.getElementById('resultsContainer').style.display = 'block';
+    } catch (err) {
+        alert('Error fetching results: ' + err);
+    }
+});
+</script>
+
+{% endblock %}

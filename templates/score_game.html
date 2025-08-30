@@ -1,0 +1,583 @@
+{% extends "layout.html" %}
+{% block title %}Score Game{% endblock %}
+
+{% block main %}
+<div class="container py-4 text-start">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4 gap-3">
+    <h1 class="mb-0">Scores</h1>
+
+    <div class="d-flex align-items-center gap-3">
+      <!-- Game selector (value=basho_id; data-draft-id=draft_id) -->
+      <div class="d-flex align-items-center">
+        <label for="gameSelect" class="me-2 fw-bold">Game:</label>
+        <select id="gameSelect" class="form-select">
+          <option value="">-- Select a Draft --</option>
+          {% for g in games %}
+            <option
+              value="{{ g.id }}"                 {# basho_id for winners #}
+              data-draft-id="{{ g.draft_id }}"   {# for /picks and /days_results #}
+              data-last-update-day="{{ g.last_update_day or 0 }}"
+            >
+              {{ g.draft_name }} — {{ g.city }} ({{ g.start_year }}-{{ '%02d'|format(g.start_month) }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- Day selector (display only; we control it) -->
+      <div class="d-flex align-items-center">
+        <label for="daySelect" class="me-2 fw-bold">Day:</label>
+        <select id="daySelect" class="form-select w-auto" disabled>
+          <option value="">--</option>
+          {% for d in range(1, 17) %} {# 1..16 #}
+            <option value="{{ d }}">Day {{ d }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button id="fetchDayBtn" class="btn btn-primary" type="button" disabled>Reveal Scores</button>
+      <button id="fetchWinnersBtn" class="btn btn-outline-success" type="button" disabled>Reveal Winners</button>
+    </div>
+  </div>
+
+  <!-- Info banner -->
+  <div id="metaBanner" class="alert alert-secondary py-2 d-none"></div>
+
+  <div id="hint" class="alert alert-info" role="alert">
+    Select a game to load players and rikishi picks.
+  </div>
+
+  <div class="table-responsive d-none" id="scoresWrap">
+    <table class="table table-bordered align-middle" id="scoresTable">
+      <thead id="scoresThead"></thead>
+      <tbody id="scoresTbody"></tbody>
+      <tfoot id="scoresTfoot"></tfoot>
+    </table>
+  </div>
+</div>
+
+<script>
+// ==============================
+// Score Game — v10.1
+// Auto-reveal winners when lastSeenDay >= 15
+// ==============================
+
+// -------- State --------
+let draft_id = null;                 // from data-draft-id (for /picks, /days_results)
+let basho_id = null;                 // from option value (for /prize_winners, /basho_winner)
+let lastUpdateDay = 0;
+let lastSeenDay   = 0;
+let nextAvailableDay = 1;
+let winnersRevealed = false;         // *** NEW ***
+
+let players = [];                    // [{id, name, picks:[{id, name}, ...]}, ...]
+let order = [];                      // [{player_id, rikishi_id}, ...]
+let ownerByRikishi = {};             // { rikishi_id: player_id }
+
+// -------- Utils --------
+function firstKey(obj, keys) {
+  for (const k of keys) if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+  return undefined;
+}
+function clearTable() {
+  document.getElementById("scoresThead").innerHTML = "";
+  document.getElementById("scoresTbody").innerHTML = "";
+  document.getElementById("scoresTfoot").innerHTML = "";
+}
+function setDaySelector(day) {
+  const sel = document.getElementById('daySelect');
+  sel.value = String(day);
+}
+function banner(msg) {
+  const el = document.getElementById('metaBanner');
+  el.textContent = msg;
+  el.classList.remove('d-none');
+}
+
+// Count wins for a rikishi (owned by pid) strictly before a given day number.
+function countWinsBeforeDay(rid, pid, dayNumberExclusive) {
+  let wins = 0;
+  for (let d = 1; d < dayNumberExclusive; d++) {
+    const td = document.querySelector(
+      `#scoresTbody tr[data-day="${d}"] td[data-player-id="${CSS.escape(String(pid))}"][data-rikishi-id="${CSS.escape(String(rid))}"]`
+    );
+    if (td && Number(td.textContent || 0) > 0) wins++;
+  }
+  return wins;
+}
+
+// Helper: add divider class to the last column of each player's block
+function maybeAddRightDivider(el, idx) {
+  const nextPid = order[idx + 1]?.player_id;
+  const isLastPickOfPlayer = (nextPid === undefined) || (nextPid !== order[idx].player_id);
+  if (isLastPickOfPlayer && nextPid !== undefined) el.classList.add("player-divider-right");
+}
+
+// -------- Build table --------
+function buildTable(days = 16) {
+  const thead = document.getElementById("scoresThead");
+  const tbody = document.getElementById("scoresTbody");
+  const tfoot = document.getElementById("scoresTfoot");
+
+  clearTable();
+  order = [];
+
+  // Column order = each player's picks in sequence
+  players.forEach(p => (p.picks || []).forEach(pk => order.push({ player_id: p.id, rikishi_id: pk.id })));
+
+  // Header row 1 (player names)
+  const tr1 = document.createElement("tr");
+  const thDay = document.createElement("th");
+  thDay.textContent = "Day";
+  tr1.appendChild(thDay);
+
+  players.forEach((p, i) => {
+    const th = document.createElement("th");
+    th.colSpan = Math.max(1, (p.picks || []).length);
+    th.textContent = p.name;
+    if (i < players.length - 1) th.classList.add("player-divider-right");
+    tr1.appendChild(th);
+  });
+
+  // daily totals header cells (right-side block, one per player)
+  players.forEach((p, i) => {
+    const th = document.createElement("th");
+    th.textContent = p.name;
+    if (i < players.length - 1) th.classList.add("player-divider-right");
+    tr1.appendChild(th);
+  });
+  thead.appendChild(tr1);
+
+  // Header row 2 (rikishi names)
+  const tr2 = document.createElement("tr");
+  tr2.appendChild(document.createElement("th"));
+  let idx2 = 0;
+  players.forEach((p) => {
+    const picks = p.picks || [];
+    if (picks.length === 0) {
+      const th = document.createElement("th");
+      th.textContent = "-";
+      if (players.length > 1) th.classList.add("player-divider-right");
+      tr2.appendChild(th);
+      idx2 += 1;
+    } else {
+      picks.forEach((pk, j) => {
+        const th = document.createElement("th");
+        th.textContent = pk.name;
+        maybeAddRightDivider(th, idx2);
+        tr2.appendChild(th);
+        idx2 += 1;
+      });
+    }
+  });
+  players.forEach((_, i) => {
+    const th = document.createElement("th");
+    if (i < players.length - 1) th.classList.add("player-divider-right");
+    tr2.appendChild(th);
+  });
+  thead.appendChild(tr2);
+
+  // Body rows: Day 1..days
+  for (let d = 1; d <= days; d++) {
+    const tr = document.createElement("tr");
+    tr.dataset.day = String(d);
+
+    const dayTh = document.createElement("th");
+    dayTh.scope = "row";
+    dayTh.textContent = `Day ${d}`;
+    tr.appendChild(dayTh);
+
+    // per-rikishi cells
+    order.forEach(({ player_id, rikishi_id }, idx) => {
+      const td = document.createElement("td");
+      td.dataset.playerId  = String(player_id);
+      td.dataset.rikishiId = String(rikishi_id);
+      td.dataset.day       = String(d);
+      td.textContent = "";
+      maybeAddRightDivider(td, idx);
+      tr.appendChild(td);
+    });
+
+    // per-player daily totals
+    players.forEach((p, i) => {
+      const tdTot = document.createElement("td");
+      tdTot.className = "fw-bold";
+      tdTot.dataset.playerDayTotal = String(p.id);
+      tdTot.textContent = "0";
+      if (i < players.length - 1) tdTot.classList.add("player-divider-right");
+      tr.appendChild(tdTot);
+    });
+
+    tbody.appendChild(tr);
+  }
+
+  // Winners row AT THE VERY BOTTOM (after Day 16)
+  const wr = document.createElement("tr");
+  wr.dataset.day = "Winners";
+  const wth = document.createElement("th");
+  wth.scope = "row";
+  wth.textContent = "Winners";
+  wr.appendChild(wth);
+
+  order.forEach(({ player_id, rikishi_id }, idx) => {
+    const td = document.createElement("td");
+    td.dataset.playerId  = String(player_id);
+    td.dataset.rikishiId = String(rikishi_id);
+    td.dataset.day       = "Winners";
+    td.textContent = "";
+    maybeAddRightDivider(td, idx);
+    wr.appendChild(td);
+  });
+  players.forEach((p, i) => {
+    const tdTot = document.createElement("td");
+    tdTot.className = "fw-bold";
+    tdTot.dataset.playerDayTotal = String(p.id);
+    tdTot.textContent = "0";
+    if (i < players.length - 1) tdTot.classList.add("player-divider-right");
+    wr.appendChild(tdTot);
+  });
+  tbody.appendChild(wr);
+
+  // Footer: per-rikishi totals + per-player column totals
+  const tfr = document.createElement("tr");
+  const totalsTh = document.createElement("th");
+  totalsTh.textContent = "Totals";
+  tfr.appendChild(totalsTh);
+
+  // per-rikishi column totals
+  order.forEach(({ player_id, rikishi_id }, idx) => {
+    const td = document.createElement("td");
+    td.className = "fw-bold";
+    td.dataset.colTotal = `${player_id}:${rikishi_id}`;
+    td.textContent = "0";
+    maybeAddRightDivider(td, idx);
+    tfr.appendChild(td);
+  });
+
+  // per-player grand totals (bottom-right block)
+  players.forEach((p, i) => {
+    const td = document.createElement("td");
+    td.className = "fw-bold";
+    td.dataset.playerColTotal = String(p.id);
+    td.textContent = "0";
+    if (i < players.length - 1) td.classList.add("player-divider-right");
+    tfr.appendChild(td);
+  });
+
+  document.getElementById("scoresTfoot").appendChild(tfr);
+}
+
+// -------- Totals --------
+function recalcTotals() {
+  // Per-rikishi column totals (all rows incl. Winners)
+  const colTotals = {};
+  document.querySelectorAll("#scoresTbody td[data-player-id]").forEach(td => {
+    const key = `${td.dataset.playerId}:${td.dataset.rikishiId}`;
+    const val = Number(td.textContent || 0);
+    colTotals[key] = (colTotals[key] || 0) + val;
+  });
+  Object.entries(colTotals).forEach(([k, v]) => {
+    const cell = document.querySelector(`#scoresTfoot td[data-col-total="${CSS.escape(k)}"]`);
+    if (cell) cell.textContent = String(v);
+  });
+
+  // Per-player daily totals (right-side cells in each row)
+  document.querySelectorAll("#scoresTbody tr").forEach(tr => {
+    const perPlayer = {};
+    tr.querySelectorAll('td[data-player-id][data-rikishi-id]').forEach(td => {
+      const pid = td.dataset.playerId;
+      perPlayer[pid] = (perPlayer[pid] || 0) + Number(td.textContent || 0);
+    });
+    players.forEach(p => {
+      const cell = tr.querySelector(`td[data-player-day-total="${CSS.escape(String(p.id))}"]`);
+      if (cell) cell.textContent = String(perPlayer[String(p.id)] || 0);
+    });
+  });
+
+  // Per-player grand totals (bottom-right footer cells)
+  const playerTotals = {};
+  document.querySelectorAll('#scoresTbody td[data-player-id][data-rikishi-id]').forEach(td => {
+    const pid = td.dataset.playerId;
+    playerTotals[pid] = (playerTotals[pid] || 0) + Number(td.textContent || 0);
+  });
+  players.forEach(p => {
+    const cell = document.querySelector(
+      `#scoresTfoot td[data-player-col-total="${CSS.escape(String(p.id))}"]`
+    );
+    if (cell) cell.textContent = String(playerTotals[String(p.id)] || 0);
+  });
+}
+
+// -------- Data loaders --------
+async function loadPicksAndLastSeen(id) {
+  const url = `/picks/${encodeURIComponent(id)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("Failed to load picks");
+  const data = await r.json();
+
+  // Normalize players from data.picks
+  const rows = Array.isArray(data.picks) ? data.picks : [];
+  const byPlayer = new Map();
+  rows.forEach(row => {
+    const pid   = firstKey(row, ['player_id']);
+    const pname = firstKey(row, ['player_name']);
+    const rid   = firstKey(row, ['rikishi_id']);
+    const rname = firstKey(row, ['ring_name', 'rikishi_name']);
+    if (pid == null || rid == null) return;
+    if (!byPlayer.has(pid)) byPlayer.set(pid, { id: pid, name: (pname ?? `Player ${pid}`), picks: [] });
+    byPlayer.get(pid).picks.push({ id: rid, name: (rname ?? `#${rid}`) });
+  });
+
+  players = Array.from(byPlayer.values()).sort((a,b) => String(a.name).localeCompare(String(b.name)));
+
+  // owner map
+  ownerByRikishi = {};
+  players.forEach(p => (p.picks || []).forEach(pk => {
+    ownerByRikishi[String(pk.id)] = String(p.id);
+  }));
+
+  // lastSeenDay as number
+  lastSeenDay = Number(data.last_seen || 0);
+  if (!Number.isFinite(lastSeenDay)) lastSeenDay = 0;
+}
+
+// Paint a single day (or "Winners")
+function paintDay(day, rows) {
+  let painted = 0;
+  const isNumericDay = /^\d+$/.test(String(day));
+  const dayNum = isNumericDay ? Number(day) : null;
+
+  rows.forEach(row => {
+    const rid = String(firstKey(row, ['rikishi_id','wrestler_id']) ?? '');
+    if (!rid) return;
+
+    const pidFromRow = firstKey(row, ['player_id','user_id','player','players_id','playerId']);
+    const pid = String(pidFromRow ?? ownerByRikishi[rid] ?? '');
+    if (!pid) return;
+
+    const pts = Number(firstKey(row, ['points','score','pts','point']) ?? 0);
+    const isWin = Number(firstKey(row, ['win','is_win'])) === 1;
+
+    const sel = `#scoresTbody tr[data-day="${day}"] td[data-player-id="${CSS.escape(pid)}"][data-rikishi-id="${CSS.escape(rid)}"]`;
+    const cell = document.querySelector(sel);
+    if (cell) {
+      // Write points
+      cell.textContent = String(pts);
+
+      // Clear any previous highlight classes
+      cell.classList.remove('win-8','win-10','kinboshi');
+
+      // Milestone wins (only for actual wins on numeric days)
+      if (isNumericDay && pts > 0) {
+        const priorWins = countWinsBeforeDay(rid, pid, dayNum);
+        const thisIsNth = priorWins + 1;
+        if (thisIsNth === 8)  cell.classList.add('win-8');
+        if (thisIsNth === 10) cell.classList.add('win-10');
+      }
+
+      // Kinboshi color (non-fusho): rank-and-file (rank_no >= 5) beats Yokozuna (rank_no==1)
+      if (isNumericDay && isWin) {
+        const winnerRank = Number(firstKey(row, ['winner_rank_no']));
+        const oppRank    = Number(firstKey(row, ['opponent_rank_no']));
+        const isFushoPoint = (pts === 1);
+        if (Number.isFinite(winnerRank) && Number.isFinite(oppRank) &&
+            winnerRank >= 5 && oppRank === 1 && !isFushoPoint) {
+          cell.classList.add('kinboshi');
+        }
+      }
+
+      painted++;
+    }
+  });
+  recalcTotals();
+  console.log(`[v10.1] painted ${painted}/${rows.length} cells for day ${day}`);
+}
+
+// Preload day results
+async function preloadDaysResults(uptoDay) {
+  if (!uptoDay || uptoDay < 1) return;
+  const cap = Math.min(16, uptoDay);
+  for (let d = 1; d <= cap; d++) {
+    const resUrl = `/days_results/${encodeURIComponent(draft_id)}/${encodeURIComponent(d)}`;
+    try {
+      const r = await fetch(resUrl);
+      if (r.ok) {
+        const rows = await r.json();
+        paintDay(String(d), rows);
+      }
+    } catch (err) {
+      console.error('[v10.1][preload] error on day', d, err);
+    }
+  }
+}
+
+// -------- Winners fetching --------
+async function onFetchWinners() {
+  if (!Number.isFinite(basho_id)) return;
+
+  const winnersRowKey = "Winners";
+
+  try {
+    const [prizesResp, yushoResp] = await Promise.all([
+      fetch(`/prize_winners/${encodeURIComponent(basho_id)}`),
+      fetch(`/basho_winner/${encodeURIComponent(basho_id)}`)
+    ]);
+
+    if (!prizesResp.ok && !yushoResp.ok) {
+      alert("Could not fetch winners.");
+      return;
+    }
+
+    const prizeRows = prizesResp.ok ? await prizesResp.json() : [];
+    const yushoRows = yushoResp.ok ? await yushoResp.json() : [];
+
+    // Count special prizes per rikishi
+    const prizeCounts = {};
+    (Array.isArray(prizeRows) ? prizeRows : []).forEach(r => {
+      const rid = String(firstKey(r, ['rikishi_id']) ?? '');
+      if (!rid) return;
+      prizeCounts[rid] = (prizeCounts[rid] || 0) + 1;
+    });
+
+    // Yusho set
+    const yushoSet = new Set(
+      (Array.isArray(yushoRows) ? yushoRows : [])
+        .map(r => String(firstKey(r, ['rikishi_id']) ?? ''))
+        .filter(Boolean)
+    );
+
+    // Build rows for paintDay
+    const rowsForPaint = [];
+    const rikishiIds = new Set([...Object.keys(prizeCounts), ...yushoSet]);
+    rikishiIds.forEach(rid => {
+      const owner = ownerByRikishi[String(rid)];
+      if (!owner) return;
+      const prizePts = (prizeCounts[rid] || 0) * 2;
+      const yushoPts = yushoSet.has(rid) ? 10 : 0;
+      const totalPts = prizePts + yushoPts;
+      if (totalPts !== 0) rowsForPaint.push({ rikishi_id: Number(rid), points: totalPts });
+    });
+
+    // Clear Winners row cells before repaint
+    document
+      .querySelectorAll(`#scoresTbody tr[data-day="${winnersRowKey}"] td[data-player-id][data-rikishi-id]`)
+      .forEach(td => { td.textContent = ""; td.classList.remove('win-8','win-10','kinboshi'); });
+
+    paintDay(winnersRowKey, rowsForPaint);
+
+    winnersRevealed = true; // *** NEW ***
+
+  } catch (e) {
+    console.error(e);
+    alert("Failed to fetch winners.");
+  }
+}
+
+// -------- Events --------
+async function onGameChange() {
+  // Reset UI
+  document.getElementById("scoresWrap").classList.add("d-none");
+  document.getElementById("hint").classList.remove("d-none");
+  document.getElementById("daySelect").disabled = true;
+  document.getElementById("fetchDayBtn").disabled = true;
+  document.getElementById("fetchWinnersBtn").disabled = true;
+  document.getElementById("metaBanner").classList.add('d-none');
+  clearTable();
+  winnersRevealed = false; // *** NEW ***
+
+  // Read selected metadata
+  const opt = document.getElementById("gameSelect").selectedOptions[0];
+  if (!opt) return;
+
+  basho_id      = (opt.value ? Number(opt.value) : NaN);
+  draft_id      = (opt.dataset.draftId ? Number(opt.dataset.draftId) : NaN);
+  lastUpdateDay = (opt.dataset.lastUpdateDay ? Number(opt.dataset.lastUpdateDay) : 0);
+
+  if (!Number.isFinite(draft_id) || !Number.isFinite(basho_id)) {
+    console.warn('[v10.1][onGameChange] invalid ids:', { draft_id, basho_id });
+    return;
+  }
+
+  try {
+    // 1) picks + lastSeen
+    await loadPicksAndLastSeen(draft_id);
+
+    // 2) build table (16 days + Winners row at bottom)
+    buildTable(16);
+    document.getElementById("scoresWrap").classList.remove("d-none");
+    document.getElementById("hint").classList.add("d-none");
+
+    // 3) preload Day 1..lastSeenDay
+    await preloadDaysResults(lastSeenDay);
+
+    // *** NEW: Auto-reveal winners if draft had 15+ days seen ***
+    if (lastSeenDay >= 15 && !winnersRevealed) {
+      await onFetchWinners();
+    }
+
+    // 4) setup next available day; cap by lastUpdateDay (up to 16)
+    nextAvailableDay = Math.min(16, Math.max(1, lastSeenDay + 1));
+    if (lastUpdateDay > 0) nextAvailableDay = Math.min(nextAvailableDay, lastUpdateDay);
+    setDaySelector(nextAvailableDay);
+
+    // 5) enable buttons appropriately
+    const canFetchDay = nextAvailableDay >= 1 && nextAvailableDay <= Math.min(16, lastUpdateDay || 16);
+    document.getElementById("fetchDayBtn").disabled = !canFetchDay;
+    document.getElementById("fetchWinnersBtn").disabled = false;
+
+  } catch (e) {
+    console.error(e);
+    alert("Could not load this game.");
+  }
+}
+
+async function onFetchDay() {
+  if (!Number.isFinite(draft_id)) return;
+
+  if (lastUpdateDay && nextAvailableDay > lastUpdateDay) {
+    document.getElementById("fetchDayBtn").disabled = true; return;
+  }
+  if (nextAvailableDay < 1 || nextAvailableDay > 16) {
+    document.getElementById("fetchDayBtn").disabled = true; return;
+  }
+
+  const day = nextAvailableDay;
+
+  try {
+    const resUrl = `/days_results/${encodeURIComponent(draft_id)}/${encodeURIComponent(day)}`;
+    const r = await fetch(resUrl);
+    if (!r.ok) { alert(`No results for day ${day}`); return; }
+    const rows = await r.json();
+    paintDay(String(day), rows);
+
+    lastSeenDay = Math.max(lastSeenDay, day);
+    nextAvailableDay = Math.min(16, (day + 1));
+    if (lastUpdateDay > 0) nextAvailableDay = Math.min(nextAvailableDay, lastUpdateDay);
+    setDaySelector(nextAvailableDay);
+
+    // *** NEW: If we've now reached >= 15 seen days, auto-reveal winners once ***
+    if (lastSeenDay >= 15 && !winnersRevealed) {
+      await onFetchWinners();
+    }
+
+    if (lastUpdateDay && nextAvailableDay > lastUpdateDay) {
+      document.getElementById("fetchDayBtn").disabled = true;
+    }
+  } catch (e) {
+    console.error(e);
+    alert("Could not fetch scores for that day.");
+  }
+}
+
+// Wire up
+document.getElementById('gameSelect').addEventListener('change', onGameChange);
+document.getElementById('fetchDayBtn').addEventListener('click', onFetchDay);
+document.getElementById('fetchWinnersBtn').addEventListener('click', onFetchWinners);
+document.addEventListener('DOMContentLoaded', () => {
+  const gs = document.getElementById('gameSelect');
+  if (gs && gs.selectedOptions.length && gs.selectedOptions[0].dataset.draftId) {
+    onGameChange();
+  }
+});
+</script>
+{% endblock %}
