@@ -88,7 +88,7 @@ def basho_winner(basho=None):
 def change_password():
     """Register user"""
 
-     if request.method == "POST":
+    if request.method == "POST":
         old_password = request.form.get("old_password")
         new_password = request.form.get("new_password")
         confirmation = request.form.get("confirmation")
