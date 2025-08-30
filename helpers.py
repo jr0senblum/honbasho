@@ -525,35 +525,6 @@ def fetch_days_results(db, basho_id, user_id, day):
         db.execute("ROLLBACK")
         raise
 
-    # update_results(db, draft_id, day, points)
-
-
-# def insert_basho_data(db, name, city, start_year, start_month, start_day):
-#     """
-#     Insert a new basho into the basho table
-#     Parameters:
-#     db   -- database connection
-#     name -- basho name
-#     city -- basho city
-#     start_year -- integer 4 digit year
-#     start_month -- integer month
-#     start_day -- integer start day
-
-#     """
-#     bashos = db.execute("SELECT COUNT(*) as count "
-#                "  FROM basho "
-#                " WHERE start_year = ? AND start_month = ?",
-#                start_year,
-#                start_month)
-#     if bashos[0]['count'] == 0:
-#         db.execute("INSERT INTO basho (name, city, start_month, start_day, start_year) "
-#                    "values (?, ?, ?, ?, ?)",
-#                    name,
-#                    city,
-#                    start_month,
-#                    start_day,
-#                    start_year)
-
 
 def insert_player_data(db, name, user_name=None, user_id=None):
     """
@@ -686,7 +657,8 @@ def persist_banzuke(db, basho_id, year:int, month:int) -> None:
 
 def get_basho_data(db, only_loaded=False):
     """
-    Return all basho that are not in the future (i.e., start_month <= this month).
+    Return all this year-to-date's basho (i.e., start_month <= this month and
+    start_year = this year).
     :param db: database connection
     :param only_loaded is True if you only want the ones with banzuke, else false
     """
@@ -705,7 +677,7 @@ def get_basho_data(db, only_loaded=False):
 
 def load_banzuke(db):
     """
-    Fetch banzuzke for all bashos that are happening now (year is this year) and not already loaded
+    Fetch banzuke for all bashos that are  or have happened this  and not already loaded
     :param db: database connection
     """
 
