@@ -8,14 +8,34 @@ from helpers import apology, banzuke_helper, fetch_basho_results, fetch_days_res
 from helpers import get_basho_data, get_basho_winner, get_non_future_basho, get_players
 from helpers import insert_player_data, load_banzuke, login_required, fetch_save_results
 
+from datetime import timedelta
 
 # Configure application
 app = Flask(__name__)
 
+from datetime import timedelta
+
 # Configure session to use filesystem (instead of signed cookies)
-app.config["SESSION_PERMANENT"] = False
-app.config["SESSION_TYPE"] = "filesystem"
+from datetime import timedelta
+import os
+from flask_session import Session
+
+# Configure session to use filesystem (instead of signed cookies)
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev")
+app.config["SESSION_TYPE"] = "filesystem"            # ✅ must be a STRING
+app.config["SESSION_PERMANENT"] = True               # or False if you want browser sessions
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=1)
+app.config["SESSION_FILE_DIR"] = os.path.join(os.path.dirname(__file__), ".flask_session")
+
+# (optional) fail-fast guard to catch bad overrides
+if not isinstance(app.config.get("SESSION_TYPE"), str):
+    raise RuntimeError(f"SESSION_TYPE must be str; got {type(app.config['SESSION_TYPE']).__name__}")
+
+if not isinstance(app.config.get("SESSION_TYPE"), str):
+    raise RuntimeError(f"SESSION_TYPE must be str; got {type(app.config['SESSION_TYPE']).__name__}")
+
 Session(app)
+
 
 # Configure CS50 Library to use SQLite database
 db = SQL("sqlite:///honbasho.db")
